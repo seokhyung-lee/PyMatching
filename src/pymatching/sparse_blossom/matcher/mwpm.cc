@@ -1,4 +1,5 @@
 // Copyright 2022 PyMatching Contributors
+// Modified in this branch, 2026: make reset safe for object reuse.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +15,7 @@
 
 #include "pymatching/sparse_blossom/matcher/mwpm.h"
 
+#include <new>
 #include <set>
 
 #include "pymatching/sparse_blossom/flooder/graph_fill_region.h"
@@ -474,6 +476,10 @@ void Mwpm::reset() {
     for (auto &m : search_flooder.graph.nodes)
         m.reset();
     flooder.queue.clear();
+    flooder.match_edges.clear();
+    search_flooder.reset();
     node_arena.~Arena();
+    new (&node_arena) Arena<AltTreeNode>();
     flooder.region_arena.~Arena();
+    new (&flooder.region_arena) Arena<GraphFillRegion>();
 }

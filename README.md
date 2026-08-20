@@ -1,3 +1,18 @@
+# Reusable Stim-free matching core
+
+> [!IMPORTANT]
+> This branch is based on PyMatching v2.3.1 at upstream commit `e27b8c6a`.
+> It provides a network-independent static matching core and reusable whole-graph reweight/decode API.
+
+## Changes
+
+The branch adds a network-independent static `libpymatching_core` target and reusable `pm::core::MatchingRegion` whole-graph reweight/decode API.
+It resets mutable matching state between repeated decodes and includes dependency-free native contract tests.
+The core target excludes Stim and its DEM adapter, libstim, pybind11, GoogleTest, the CLI, and diagram code.
+See [NOTICE](NOTICE) for provenance and modification details.
+
+---
+
 # PyMatching 2
 
 ![Continuous Integration](https://github.com/oscarhiggott/PyMatching/workflows/ci/badge.svg)

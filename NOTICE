@@ -1,0 +1,10 @@
+PyMatching reusable matching core modifications
+================================================
+
+This branch is based on PyMatching v2.3.1, upstream commit e27b8c6a.
+
+Changes:
+- add a Stim-free static matching core;
+- add reusable whole-graph f64 and exact u32 reweight/decode APIs;
+- reset mutable matching state between repeated decodes; and
+- provide a dependency-free CMake build and native contract tests.
