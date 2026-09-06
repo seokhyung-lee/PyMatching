@@ -8,6 +8,9 @@
 
 The branch adds a network-independent static `libpymatching_core` target and reusable `pm::core::MatchingRegion` whole-graph reweight/decode API.
 It resets mutable matching state between repeated decodes and includes dependency-free native contract tests.
+Repeated core decodes retain arena allocation slots, reset only reached search nodes, and use precomputed adjacency-to-topology indices for path extraction.
+The original no-argument `Mwpm::reset()` remains a full reset for other callers.
+Native contract assertions remain enabled in Release builds.
 The core target excludes Stim and its DEM adapter, libstim, pybind11, GoogleTest, the CLI, and diagram code.
 See [NOTICE](NOTICE) for provenance and modification details.
 

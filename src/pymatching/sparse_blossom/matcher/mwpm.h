@@ -83,6 +83,8 @@ struct Mwpm {
 
     void create_detection_event(DetectorNode* node);
     void reset();
+    // Modified 2026: retain arena storage and reset only reached search nodes.
+    void reset_for_reuse();
 };
 }  // namespace pm
 

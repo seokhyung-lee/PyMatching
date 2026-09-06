@@ -1,4 +1,5 @@
 // Copyright 2022 PyMatching Contributors
+// Modified 2026: retain allocation slots while destroying live arena objects.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,6 +56,27 @@ struct Arena {
     void del(T *p) {
         available.push_back(p);
         p->~T();
+    }
+
+    void reset_keep_storage() {
+        if (available.size() == allocated.size()) {
+            return;
+        }
+        // Allocate scratch before destruction so allocation failure preserves ownership.
+        auto ordered = allocated;
+        auto unused = available;
+        available.reserve(allocated.size());
+        std::sort(ordered.begin(), ordered.end());
+        std::sort(unused.begin(), unused.end());
+        size_t next_unused = 0;
+        for (T *object : ordered) {
+            if (next_unused < unused.size() && unused[next_unused] == object) {
+                ++next_unused;
+            } else {
+                object->~T();
+            }
+        }
+        available.assign(allocated.begin(), allocated.end());
     }
 
     ~Arena() {

@@ -85,7 +85,7 @@ struct MatchingRegion::Impl {
     size_t detector_count;
     std::vector<ClassEdge> class_edges;
     std::vector<TopologyEdge> topology_edges;
-    std::map<EdgeKey, size_t> topology_index;
+    std::vector<std::vector<size_t>> search_topology_index;
     Mwpm matcher;
 
     Impl(size_t num_detectors, std::vector<ClassEdge> edges)
@@ -97,7 +97,6 @@ struct MatchingRegion::Impl {
         MatchingGraph matching_graph(detector_count, 0);
         SearchGraph search_graph(detector_count);
         for (const auto& [key, indices] : groups) {
-            topology_index.emplace(key, topology_edges.size());
             topology_edges.push_back({key, indices});
             if (key.second == BOUNDARY_NODE) {
                 matching_graph.add_boundary_edge(key.first, 0, {});
@@ -108,7 +107,15 @@ struct MatchingRegion::Impl {
             }
         }
         matcher = Mwpm(GraphFlooder(std::move(matching_graph)), SearchFlooder(std::move(search_graph)));
+        for (const auto& node : matcher.search_flooder.graph.nodes) {
+            search_topology_index.emplace_back(node.neighbors.size(), SIZE_MAX);
+        }
         bind_weight_handles();
+        for (const auto& indices : search_topology_index) {
+            if (std::any_of(indices.begin(), indices.end(), [&](size_t i) { return i >= topology_edges.size(); })) {
+                throw std::logic_error("unmapped search topology edge");
+            }
+        }
     }
 
     void bind_weight_handles() {
@@ -125,8 +132,12 @@ struct MatchingRegion::Impl {
             auto* search_v = v == BOUNDARY_NODE ? nullptr : &matcher.search_flooder.graph.nodes[v];
             size_t search_index = search_u.index_of_neighbor(search_v);
             edge.search_weight = &search_u.neighbor_weights[search_index];
+            const size_t topology_id = static_cast<size_t>(&edge - topology_edges.data());
+            search_topology_index[u][search_index] = topology_id;
             if (search_v != nullptr) {
-                edge.search_reverse_weight = &search_v->neighbor_weights[search_v->index_of_neighbor(&search_u)];
+                const size_t reverse = search_v->index_of_neighbor(&search_u);
+                edge.search_reverse_weight = &search_v->neighbor_weights[reverse];
+                search_topology_index[static_cast<size_t>(v)][reverse] = topology_id;
             }
         }
     }
@@ -148,7 +159,7 @@ struct MatchingRegion::Impl {
             throw std::invalid_argument("weights length does not match num_class_edges");
         }
         validate_syndrome(syndrome);
-        matcher.reset();
+        matcher.reset_for_reuse();
         for (auto& edge : topology_edges) {
             size_t selected = edge.class_indices.front();
             uint32_t selected_weight = weights[selected];
@@ -191,15 +202,7 @@ struct MatchingRegion::Impl {
             matcher.search_flooder.iter_edges_on_shortest_path_from_middle(
                 from, to, [&](const SearchGraphEdge& path_edge) {
                     uint32_t u = static_cast<uint32_t>(path_edge.detector_node - &matcher.search_flooder.graph.nodes[0]);
-                    auto* neighbor = path_edge.detector_node->neighbors[path_edge.neighbor_index];
-                    int64_t v = neighbor == nullptr
-                                    ? BOUNDARY_NODE
-                                    : static_cast<int64_t>(neighbor - &matcher.search_flooder.graph.nodes[0]);
-                    EdgeKey key = v == BOUNDARY_NODE
-                                      ? EdgeKey{u, BOUNDARY_NODE}
-                                      : EdgeKey{std::min<uint32_t>(u, static_cast<uint32_t>(v)),
-                                                std::max<uint32_t>(u, static_cast<uint32_t>(v))};
-                    auto& topology_edge = topology_edges[topology_index.at(key)];
+                    auto& topology_edge = topology_edges[search_topology_index[u][path_edge.neighbor_index]];
                     result.selected_edges[topology_edge.selected_class] ^= 1;
                     if (result.objective >
                         std::numeric_limits<int64_t>::max() - topology_edge.external_weight) {

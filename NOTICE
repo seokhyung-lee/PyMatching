@@ -8,3 +8,11 @@ Changes:
 - add reusable whole-graph f64 and exact u32 reweight/decode APIs;
 - reset mutable matching state between repeated decodes; and
 - provide a dependency-free CMake build and native contract tests.
+
+Runtime improvements, 2026:
+- retain arena allocation slots between reusable-core decodes;
+- reset only reached search nodes in the reusable-core reset path;
+- bind shortest-path adjacency entries directly to topology edges; and
+- retain assertions in Release contract tests and cover arena object lifetimes.
+
+The original no-argument Mwpm::reset retains its full-reset semantics.

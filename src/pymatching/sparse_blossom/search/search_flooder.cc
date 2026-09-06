@@ -77,21 +77,22 @@ void pm::SearchFlooder::reschedule_events_at_search_detector_node(pm::SearchDete
 }
 
 void pm::SearchFlooder::do_search_starting_at_empty_search_detector_node(pm::SearchDetectorNode *src) {
+    // Modified 2026: register before mutation for exception-safe reached-node reset.
+    reached_nodes.push_back(src);
     src->reached_from_source = src;
     src->index_of_predecessor = SIZE_MAX;
     src->distance_from_source = 0;
-    reached_nodes.push_back(src);
     reschedule_events_at_search_detector_node(*src);
 }
 
 void pm::SearchFlooder::do_search_exploring_empty_detector_node(
     pm::SearchDetectorNode &empty_node, size_t empty_to_from_index) {
     auto from_node = empty_node.neighbors[empty_to_from_index];
+    reached_nodes.push_back(&empty_node);
     empty_node.reached_from_source = from_node->reached_from_source;
     empty_node.index_of_predecessor = empty_to_from_index;
     empty_node.distance_from_source =
         empty_node.neighbor_weights[empty_to_from_index] + from_node->distance_from_source;
-    reached_nodes.push_back(&empty_node);
     reschedule_events_at_search_detector_node(empty_node);
 }
 

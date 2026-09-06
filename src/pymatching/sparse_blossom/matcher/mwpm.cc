@@ -483,3 +483,14 @@ void Mwpm::reset() {
     flooder.region_arena.~Arena();
     new (&flooder.region_arena) Arena<GraphFillRegion>();
 }
+
+// Modified 2026: reusable matching cores retain slots across complete decodes.
+void Mwpm::reset_for_reuse() {
+    for (auto &n : flooder.graph.nodes)
+        n.reset();
+    flooder.queue.clear();
+    flooder.match_edges.clear();
+    search_flooder.reset();
+    node_arena.reset_keep_storage();
+    flooder.region_arena.reset_keep_storage();
+}

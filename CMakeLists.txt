@@ -40,5 +40,11 @@ install(FILES src/pymatching/core/matching_region.h DESTINATION include/pymatchi
 if(BUILD_TESTING)
     add_executable(pymatching_core_tests src/pymatching/core/matching_region.test.cc)
     target_link_libraries(pymatching_core_tests PRIVATE libpymatching_core)
+    # Contract tests use assert, including in Release builds.
+    if(MSVC)
+        target_compile_options(pymatching_core_tests PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(pymatching_core_tests PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME pymatching_core_tests COMMAND pymatching_core_tests)
 endif()
