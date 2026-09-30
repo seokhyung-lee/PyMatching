@@ -16,3 +16,12 @@ Runtime improvements, 2026:
 - retain assertions in Release contract tests and cover arena object lifetimes.
 
 The original no-argument Mwpm::reset retains its full-reset semantics.
+
+Opt-in reuse and recurrence support, 2026-09-30:
+- add typed independent sparse-update and retained-matching options;
+- reuse exact quantization and skip unchanged graph-weight stores;
+- preserve unaffected frozen region hierarchies with strict-gap invalidation;
+- cold-reset on widespread changes or zero-cost edges becoming positive;
+- add explicit sequence reset and exception cleanup;
+- expose canonical live-state snapshots without allocator-history dependence;
+- add matching_reuse and matching_snapshot sources and native contract tests.

@@ -7,12 +7,18 @@
 ## Changes
 
 The branch adds a network-independent static `libpymatching_core` target and reusable `pm::core::MatchingRegion` whole-graph reweight/decode API.
-It resets mutable matching state between repeated decodes and includes dependency-free native contract tests.
+It resets mutable matching state between repeated decodes by default and includes dependency-free native contract tests.
 Repeated core decodes retain arena allocation slots, reset only reached search nodes, and use precomputed adjacency-to-topology indices for path extraction.
 The original no-argument `Mwpm::reset()` remains a full reset for other callers.
 Native contract assertions remain enabled in Release builds.
 The core target excludes Stim and its DEM adapter, libstim, pybind11, GoogleTest, the CLI, and diagram code.
 See [NOTICE](NOTICE) for provenance and modification details.
+
+`MatchingRegion(num_nodes, edges, MatchingOptions{sparse_updates, reuse_state})` accepts two independent, default-off options. Sparse updates skip equal graph-weight stores and reuse quantization only after exact input and scale checks. State reuse preserves unaffected frozen matching/blossom hierarchies between solves, invalidates affected matched pairs using the strict-gap rule, and cold-resets when more than 64 topology edges change or any selected topology cost rises from zero. Both options compose; state reuse can select a different tied optimum.
+
+Call `reset_matching_state()` at every independent sequence or physical-shot boundary. It retains topology, allocation capacity and exact-input quantization memoization. Exceptions clear matching maturity. `matching_state_snapshot()` returns an exact, pointer-independent frozen-state key for recurrence checks, including ordered hierarchy/shell/arrival state and current costs/syndrome. It canonicalizes live region IDs independently of allocator history and excludes semantically inert quantization memoization and overwritten scratch state. The caller must compare this key together with its own algorithm state; the snapshot does not implement cycle stopping itself.
+
+Configure CMake with `-DBUILD_TESTING=ON` to run the core, reuse and snapshot CTest targets. This fork's CMake entry point builds only the Stim-free core. Reuse tests cover all four options, exhaustive tiny optima, seeded mixed updates, zero-weight contacts, f64/u32 transitions, independent-sequence resets and exceptions. Snapshot tests cover ordered children/shells, radii/arrivals and inert allocator-slot history.
 
 ---
 

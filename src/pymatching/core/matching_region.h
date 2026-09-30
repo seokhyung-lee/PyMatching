@@ -28,9 +28,16 @@ struct DecodeResult {
     double normalising_constant;
 };
 
+/// Independent, constructor-fixed optimizations. Both preserve integer optimality;
+/// reuse_state can select a different tied optimum after previous solves.
+struct MatchingOptions {
+    bool sparse_updates = false;
+    bool reuse_state = false;
+};
+
 class MatchingRegion {
    public:
-    MatchingRegion(size_t num_detectors, std::vector<ClassEdge> class_edges);
+    MatchingRegion(size_t num_detectors, std::vector<ClassEdge> class_edges, MatchingOptions options = {});
     ~MatchingRegion();
     MatchingRegion(MatchingRegion&&) noexcept;
     MatchingRegion& operator=(MatchingRegion&&) noexcept;
@@ -39,6 +46,14 @@ class MatchingRegion {
 
     size_t num_detectors() const;
     size_t num_class_edges() const;
+    /// Start an independent solve sequence, retaining topology, storage and exact
+    /// quantization memoization. Required at every physical-shot boundary.
+    void reset_matching_state();
+    /// Exact, process-local semantic key after a successful retained solve.
+    /// Uses detector and canonical live-region identities, never raw pointers,
+    /// destructed arena contents or capacity left by earlier physical shots.
+    /// This is a comparison key, not a stable storage or restore format.
+    std::vector<uint64_t> matching_state_snapshot() const;
     DecodeResult reweight_f64_and_decode(
         const std::vector<double>& weights, const std::vector<uint8_t>& adjusted_syndrome);
     DecodeResult reweight_u32_and_decode(

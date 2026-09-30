@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE.
 
 #include "pymatching/core/matching_region.h"
+#include "pymatching/core/matching_reuse.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,7 +44,12 @@ void process_timeline(Mwpm& mwpm, const std::vector<uint64_t>& detection_events)
     }
     mwpm.flooder.queue.cur_time = 0;
     for (uint64_t detection : detection_events) {
-        mwpm.create_detection_event(&mwpm.flooder.graph.nodes[detection]);
+        auto* node = &mwpm.flooder.graph.nodes[detection];
+        if (!node->region_that_arrived) {
+            mwpm.create_detection_event(node);
+        } else if (node->reached_from_source != node) {
+            throw std::logic_error("retained detection has the wrong source");
+        }
     }
     while (true) {
         auto event = mwpm.flooder.run_until_next_mwpm_notification();
@@ -87,9 +93,16 @@ struct MatchingRegion::Impl {
     std::vector<TopologyEdge> topology_edges;
     std::vector<std::vector<size_t>> search_topology_index;
     Mwpm matcher;
+    const MatchingOptions options;
+    bool mature = false;
+    std::vector<uint8_t> previous_syndrome;
+    std::vector<double> previous_float_weights;
+    std::vector<uint32_t> retained_quantized;
+    double previous_scale = 0;
+    double previous_maximum = 0;
 
-    Impl(size_t num_detectors, std::vector<ClassEdge> edges)
-        : detector_count(num_detectors), class_edges(std::move(edges)) {
+    Impl(size_t num_detectors, std::vector<ClassEdge> edges, MatchingOptions selected_options)
+        : detector_count(num_detectors), class_edges(std::move(edges)), options(selected_options) {
         std::map<EdgeKey, std::vector<size_t>> groups;
         for (size_t i = 0; i < class_edges.size(); ++i) {
             groups[canonical_key(class_edges[i], detector_count)].push_back(i);
@@ -151,15 +164,8 @@ struct MatchingRegion::Impl {
         }
     }
 
-    DecodeResult decode_quantized(
-        const std::vector<uint32_t>& weights,
-        const std::vector<uint8_t>& syndrome,
-        double normalising_constant) {
-        if (weights.size() != class_edges.size()) {
-            throw std::invalid_argument("weights length does not match num_class_edges");
-        }
-        validate_syndrome(syndrome);
-        matcher.reset_for_reuse();
+    bool update_weights(const std::vector<uint32_t>& weights, bool reusable, std::vector<GraphFillRegion*>& dirty) {
+        size_t changed_edges = 0;
         for (auto& edge : topology_edges) {
             size_t selected = edge.class_indices.front();
             uint32_t selected_weight = weights[selected];
@@ -173,6 +179,33 @@ struct MatchingRegion::Impl {
             if (selected_weight > MAX_EXACT_EDGE_WEIGHT) {
                 throw std::invalid_argument("quantized edge weight exceeds MAX_EXACT_EDGE_WEIGHT");
             }
+            if (reusable && edge.external_weight != selected_weight) {
+                // A zero-cost plateau can carry a retained contact whose
+                // endpoints belong to other matched regions. Endpoint ownership
+                // alone does not invalidate that witness when the plateau opens.
+                if ((edge.external_weight == 0 && selected_weight > 0) || ++changed_edges > 64) {
+                    reusable = false;
+                } else {
+                    auto& u = matcher.flooder.graph.nodes[edge.key.first];
+                    auto* v = edge.key.second == BOUNDARY_NODE ? nullptr : &matcher.flooder.graph.nodes[edge.key.second];
+                    auto* a = u.region_that_arrived_top;
+                    auto* b = v ? v->region_that_arrived_top : nullptr;
+                    const int64_t ra = a ? a->radius.y_intercept() + u.wrapped_radius_cached : 0;
+                    const int64_t rb = b ? b->radius.y_intercept() + v->wrapped_radius_cached : 0;
+                    // The original v4 strict-gap rule applies only across
+                    // distinct regions, and to both old and new costs.
+                    const bool separated = a != b && int64_t(edge.external_weight) * 2 > ra + rb &&
+                                           int64_t(selected_weight) * 2 > ra + rb;
+                    if (!separated) {
+                        detail::invalidate_matched_node(matcher, edge.key.first, dirty);
+                        if (v) detail::invalidate_matched_node(matcher, edge.key.second, dirty);
+                    }
+                }
+            }
+            // Equal-cost parallel classes may exchange identity. Update it even
+            // when all four graph-weight stores can be skipped.
+            edge.selected_class = selected;
+            if (options.sparse_updates && edge.external_weight == selected_weight) continue;
             const weight_int internal_weight = selected_weight * 2U;
             *edge.matching_weight = internal_weight;
             *edge.search_weight = internal_weight;
@@ -180,10 +213,42 @@ struct MatchingRegion::Impl {
                 *edge.matching_reverse_weight = internal_weight;
                 *edge.search_reverse_weight = internal_weight;
             }
-            edge.selected_class = selected;
             edge.external_weight = selected_weight;
         }
+        return reusable;
+    }
 
+    void prepare_matching(bool reusable, const std::vector<uint8_t>& syndrome, std::vector<GraphFillRegion*>& dirty) {
+        if (!reusable) {
+            matcher.reset_for_reuse();
+            return;
+        }
+        for (size_t i = 0; i < syndrome.size(); ++i) {
+            if (syndrome[i] != previous_syndrome[i]) detail::invalidate_matched_node(matcher, i, dirty);
+        }
+        detail::erase_dirty_regions(matcher, dirty);
+        matcher.flooder.queue.clear();
+        matcher.flooder.queue.cur_time = 0;
+        for (auto& node : matcher.flooder.graph.nodes) node.node_event_tracker.clear();
+    }
+
+    DecodeResult decode_quantized(
+        const std::vector<uint32_t>& weights,
+        const std::vector<uint8_t>& syndrome,
+        double normalising_constant) {
+        if (weights.size() != class_edges.size()) {
+            throw std::invalid_argument("weights length does not match num_class_edges");
+        }
+        validate_syndrome(syndrome);
+        bool reusable = options.reuse_state && mature;
+        // A failed solve never leaves a reusable state. The next valid call
+        // resets it before entering the matcher, even after a partial update.
+        mature = false;
+        if (!options.reuse_state) matcher.reset_for_reuse();
+        std::vector<GraphFillRegion*> dirty;
+        if (reusable) dirty.reserve(128);
+        reusable = update_weights(weights, reusable, dirty);
+        if (options.reuse_state) prepare_matching(reusable, syndrome, dirty);
         std::vector<uint64_t> detections;
         for (size_t i = 0; i < syndrome.size(); ++i) {
             if (syndrome[i]) {
@@ -191,7 +256,8 @@ struct MatchingRegion::Impl {
             }
         }
         process_timeline(matcher, detections);
-        extract_match_edges(matcher, detections);
+        if (options.reuse_state) detail::extract_retained_matches(matcher, detections);
+        else extract_match_edges(matcher, detections);
 
         DecodeResult result{std::vector<uint8_t>(class_edges.size(), 0), 0, normalising_constant};
         for (const auto& match_edge : matcher.flooder.match_edges) {
@@ -211,12 +277,16 @@ struct MatchingRegion::Impl {
                     result.objective += topology_edge.external_weight;
                 });
         }
+        if (options.reuse_state) {
+            previous_syndrome = syndrome;
+            mature = true;
+        }
         return result;
     }
 };
 
-MatchingRegion::MatchingRegion(size_t num_detectors, std::vector<ClassEdge> class_edges)
-    : impl_(std::make_unique<Impl>(num_detectors, std::move(class_edges))) {
+MatchingRegion::MatchingRegion(size_t num_detectors, std::vector<ClassEdge> class_edges, MatchingOptions options)
+    : impl_(std::make_unique<Impl>(num_detectors, std::move(class_edges), options)) {
 }
 MatchingRegion::~MatchingRegion() = default;
 MatchingRegion::MatchingRegion(MatchingRegion&&) noexcept = default;
@@ -230,8 +300,31 @@ size_t MatchingRegion::num_class_edges() const {
     return impl_->class_edges.size();
 }
 
+void MatchingRegion::reset_matching_state() {
+    impl_->mature = false;
+    impl_->previous_syndrome.clear();
+    impl_->matcher.reset_for_reuse();
+}
+
+std::vector<uint64_t> MatchingRegion::matching_state_snapshot() const {
+    if (!impl_->options.reuse_state) return {};
+    if (!impl_->mature) throw std::logic_error("matching snapshot requires a successful retained solve");
+    auto words = detail::frozen_matching_snapshot(impl_->matcher);
+    words.push_back(impl_->previous_syndrome.size());
+    for (auto bit : impl_->previous_syndrome) words.push_back(bit);
+    words.push_back(impl_->topology_edges.size());
+    for (const auto& edge : impl_->topology_edges) {
+        words.push_back(edge.external_weight);
+        words.push_back(edge.selected_class);
+    }
+    // Exact quantization memoization changes computation cost only. Keeping it
+    // in this key would let an earlier shot affect recurrence in mixed f64/u32
+    // sequences, even though every current quantized input is identical.
+    return words;
+}
+
 DecodeResult MatchingRegion::reweight_f64_and_decode(
-    const std::vector<double>& weights, const std::vector<uint8_t>& adjusted_syndrome) {
+    const std::vector<double>& weights, const std::vector<uint8_t>& adjusted_syndrome) try {
     if (weights.size() != impl_->class_edges.size()) {
         throw std::invalid_argument("weights length does not match num_class_edges");
     }
@@ -248,25 +341,51 @@ DecodeResult MatchingRegion::reweight_f64_and_decode(
                              ? 1.0
                              : static_cast<double>(MAX_EXACT_EDGE_WEIGHT) / maximum;
     const bool scale_overflowed = !std::isfinite(scale);
-    std::vector<uint32_t> quantized;
-    quantized.reserve(weights.size());
-    for (double weight : weights) {
+    if (!impl_->options.sparse_updates) {
+        std::vector<uint32_t> quantized;
+        quantized.reserve(weights.size());
+        for (double weight : weights) {
+            const double scaled = scale_overflowed
+                                      ? (weight / maximum) * static_cast<double>(MAX_EXACT_EDGE_WEIGHT)
+                                      : weight * scale;
+            quantized.push_back(static_cast<uint32_t>(std::round(scaled)));
+        }
+        return impl_->decode_quantized(quantized, adjusted_syndrome, scale);
+    }
+    auto& quantized = impl_->retained_quantized;
+    const bool reusable_scale = impl_->previous_float_weights.size() == weights.size() &&
+                                impl_->previous_scale == scale &&
+                                (!scale_overflowed || impl_->previous_maximum == maximum);
+    quantized.resize(weights.size());
+    for (size_t i = 0; i < weights.size(); ++i) {
+        const double weight = weights[i];
+        // Exact computation reuse, never an epsilon-based weight approximation.
+        if (reusable_scale && weight == impl_->previous_float_weights[i]) continue;
         const double scaled = scale_overflowed
                                   ? (weight / maximum) * static_cast<double>(MAX_EXACT_EDGE_WEIGHT)
                                   : weight * scale;
-        quantized.push_back(static_cast<uint32_t>(std::round(scaled)));
+        quantized[i] = static_cast<uint32_t>(std::round(scaled));
     }
+    impl_->previous_float_weights = weights;
+    impl_->previous_scale = scale;
+    impl_->previous_maximum = maximum;
     return impl_->decode_quantized(quantized, adjusted_syndrome, scale);
+} catch (...) {
+    impl_->mature = false;
+    throw;
 }
 
 DecodeResult MatchingRegion::reweight_u32_and_decode(
-    const std::vector<uint32_t>& weights, const std::vector<uint8_t>& adjusted_syndrome) {
+    const std::vector<uint32_t>& weights, const std::vector<uint8_t>& adjusted_syndrome) try {
     for (uint32_t weight : weights) {
         if (weight > MAX_EXACT_EDGE_WEIGHT) {
             throw std::invalid_argument("u32 weight exceeds MAX_EXACT_EDGE_WEIGHT");
         }
     }
     return impl_->decode_quantized(weights, adjusted_syndrome, 1.0);
+} catch (...) {
+    impl_->mature = false;
+    throw;
 }
 
 }  // namespace pm::core

@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(PYMATCHING_CORE_SOURCES
     src/pymatching/core/matching_region.cc
+    src/pymatching/core/matching_reuse.cc
+    src/pymatching/core/matching_snapshot.cc
     src/pymatching/sparse_blossom/flooder/graph.cc
     src/pymatching/sparse_blossom/flooder/detector_node.cc
     src/pymatching/sparse_blossom/flooder/graph_fill_region.cc
@@ -38,13 +40,20 @@ install(TARGETS libpymatching_core ARCHIVE DESTINATION lib)
 install(FILES src/pymatching/core/matching_region.h DESTINATION include/pymatching/core)
 
 if(BUILD_TESTING)
-    add_executable(pymatching_core_tests src/pymatching/core/matching_region.test.cc)
-    target_link_libraries(pymatching_core_tests PRIVATE libpymatching_core)
+  foreach(contract IN ITEMS matching_region matching_reuse matching_snapshot)
+    string(REPLACE "matching_" "" contract_name ${contract})
+    set(contract_target pymatching_${contract_name}_tests)
+    if(contract STREQUAL "matching_region")
+        set(contract_target pymatching_core_tests)
+    endif()
+    add_executable(${contract_target} src/pymatching/core/${contract}.test.cc)
+    target_link_libraries(${contract_target} PRIVATE libpymatching_core)
     # Contract tests use assert, including in Release builds.
     if(MSVC)
-        target_compile_options(pymatching_core_tests PRIVATE /UNDEBUG)
+        target_compile_options(${contract_target} PRIVATE /UNDEBUG)
     else()
-        target_compile_options(pymatching_core_tests PRIVATE -UNDEBUG)
+        target_compile_options(${contract_target} PRIVATE -UNDEBUG)
     endif()
-    add_test(NAME pymatching_core_tests COMMAND pymatching_core_tests)
+    add_test(NAME ${contract_target} COMMAND ${contract_target})
+  endforeach()
 endif()
